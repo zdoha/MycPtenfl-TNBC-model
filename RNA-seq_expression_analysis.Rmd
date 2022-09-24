@@ -1,0 +1,427 @@
+---
+title: "Myc;Ptenfl TNBC mouse model RNA-seq analysis"
+author: "Zinab O. Doha"
+date: "01/28/2021"
+output: html_document
+---
+
+# Import Libraries
+
+```{r}
+library(tidyverse)
+```
+
+
+
+# Import and format data
+
+```{r}
+data1 <- read.csv("expression_file.txt", sep = '\t' )
+
+mouse_groups <- c(0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1) ## class labels
+mouse_groups <- as.factor(mouse_groups)
+
+rownames(data1) <- data1$genes ## row names should be gene names
+head(data1) ## preview data
+data1 <- data1 %>% select(-genes) ## remove gene names column -- now set as row labels
+```
+
+
+```{r}
+mat1 <- data.matrix(data1) ## switch data type
+t(head(mat1))
+```
+
+# Analysis  
+## Plot samples by first two principal components
+
+```{r}
+pca1 <- prcomp(mat1) ## run PCA
+pca2 <- as.data.frame(pca1$rotation) ## take PCS
+pca3 <- pca2 %>% select(PC1, PC2) ## select first 2
+pca3 <- cbind(pca3, mouse_groups) ## apply class labels
+pca3 ## look at PCs
+pca_plot <- ggplot(data = pca3, aes(x = PC1, y = PC2, colour = mouse_groups)) + geom_point(size = 1, alpha = .6, width = 0.2) ## create plot
+pca_plot ## plot by first 2 principal components
+```
+
+## Normalize expression values and create heatmap from most variable loci
+
+```{r}
+full <- t(mat1) ## transpose matrix
+
+max_vals <- c()
+
+for (feat in seq(dim(full)[2])){ ## create vector of maximum expression values for every locus
+  max_vals <- c(max_vals, max(full[, feat]))
+}
+```
+
+## Normalize expression values
+
+```{r}
+samples <- c()
+
+for (obs in seq(dim(full)[1])){ ## for every column, divide by maximum value of that feature to normalize between 0 and 1
+  newrow <- full[obs,] / max_vals 
+  samples <- rbind(samples, newrow)
+}
+
+samples[is.na(samples)] <- 0 ## replace NaNs with 0 -- fix divide by zero error
+
+```
+
+## Look for most variable sites
+
+```{r}
+variances <- c()
+
+for (feat in seq(dim(samples)[2])){ ## calculate variance for every feature
+  variances <- c(variances, var(full[, feat]))
+}
+
+```
+
+
+```{r}
+## take top "n" most variable loci
+
+n = 1200 ## choose how many loci to include in heatmap
+
+var_ordered <- variances[order(variances, decreasing = TRUE)] ## rank features by variance
+cutoff <- min(var_ordered[1:n+1]) ## take "n" most variable sites
+
+
+bool1 <- variances > cutoff ## boolean index for most variably expressed loci
+```
+
+## Select most variable sites 
+
+```{r}
+most_var <- samples[,bool1] ## index with most variable sites
+rownames(most_var) <- rownames(full) ## sample names as row names
+```
+
+## Create heatmap / dendrograms 
+
+```{r}
+heatmap(most_var) ## create heatmap
+```
+
+
+SR: 1, 2, 3, 4, 5, 6, 10, 11
+
+SP: 7, 8, 9, 12, 13
+
+Developing dendrogram from 1200 most variably expressed genes, recapitulates 2 subgroups
+
+# Human subtyping 
+
+Parallels between four subtypes in human TNBC and mouse data
+
+
+```{r}
+#subtybing
+#install.packages("reshape2")
+#install.packages("ggplot2")
+#install.packages("tidyr")
+library(reshape2)
+library(ggplot2)
+library(tidyr)
+```
+
+ 
+## Read in files
+```{r}
+expression_file = "expression_file.txt"
+df = read.csv(expression_file, sep="\t", header=TRUE, row.names=1, check.names=FALSE)
+ 
+centroid_file = "Human_TNBC_77centroids.csv"
+centroids <- read.csv(centroid_file, header=TRUE, row.names=1, sep="\t")
+ 
+#names <- df[,1]
+#rownames(df) = make.names(names, unique=TRUE)
+#rownames(df) <- df[,1]
+```
+
+ 
+## Scale values and subset genes in signature
+```{r}
+df <- t(scale(t(df), center=TRUE, scale=TRUE))
+```
+
+ 
+## Make gene names uppercase
+```{r}
+names <- rownames(df)
+rownames(df) = toupper(names)
+```
+
+ 
+## Replace NaNs with 0s
+```{r}
+df[is.na(df)] <- 0
+ 
+df_data_filter <- df_data[df_data$Var1 %in% centroids$Gene, ]
+ 
+centroids_filtered <- centroids[centroids$Gene %in% df_data_filter$Var1, ]
+ 
+df2 <- df_data_filter %>%
+  spread(Var2, Freq)
+```
+
+ 
+## x must be numeric, make first column numeric
+```{r}
+rownames(df2) <- df2$Var1
+ 
+df2 <- subset(df2, select = -Var1)
+```
+
+ 
+## Divide df into sub data frames to make compatible dimensions
+ 
+```{r}
+df3 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b1_TPM, PT_Myc_PTEN_MGT_b2_TPM, PT_Myc_PTEN_MGT_b3_TPM, PT_Myc_PTEN_MGT_b4_TPM))
+df4 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b5_TPM, PT_Myc_PTEN_MGT_b6_TPM, PT_Myc_PTEN_MGT_b7_TPM, PT_Myc_PTEN_MGT_b8_TPM))
+df5 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b9_TPM, PT_Myc_PTEN_MGT_b10_TPM, PT_Myc_PTEN_MGT_b11_TPM, PT_Myc_PTEN_MGT_b12_TPM))
+df6 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b11_TPM, PT_Myc_PTEN_MGT_b12_TPM, PT_Myc_PTEN_MGT_b13_TPM, PT_Myc_PTEN_MGT_b14_TPM))
+```
+
+ 
+## y must be numeric, make first column numeric
+```{r}
+rownames(centroids_filtered) <- centroids_filtered$Gene
+centroids_filtered <- subset(centroids_filtered, select = -Gene)
+```
+
+ 
+## Run correletion
+```{r}
+cor <- cor(df3, centroids_filtered, method="pearson")
+#cor <- cor(df4, centroids_filtered, method="pearson")
+#cor <- cor(df5, centroids_filtered, method="pearson")
+#cor <- cor(df6, centroids_filtered, method="pearson")
+
+ 
+cor <- melt(as.matrix(cor))
+colnames(cor) <- c("Sample", "Subtype", "Pearson")
+```
+
+ 
+## Bar plot of results
+
+```{r}
+ggplot(cor,aes(x=Sample, y=Pearson, fill=Subtype)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  guides(fill=guide_legend(ncol=1))
+ 
+ggsave(file = "subtype.cor4.png", device = "png", width = 5, height = 5, dpi=300)
+```
+## Save file
+```{r}
+saveRDS(cor,
+        file = 'HUMAN_CORELATION.rds')
+```
+
+# Human corelation heatmap
+```{r}
+TNBC <- read.rds("HUMAN_CORELATION.rds", row.names = 1)
+
+
+inputTN <- as.matrix(t(TNBC))
+
+
+
+col_anno <- data.frame(histology = str_split(colnames(inputTN), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputTN))
+
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+dcols = dist(t(inputTN), method = "minkowski")
+
+pheatmap(prop.table(inputTN, margin = 2),scale="column", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, main = 'Human TNBC Spearman correlation (column scaled)', legend = FALSE)
+
+pheatmap(inputTN, scale="column", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 16, main = 'Human TNBC Spearman correlation (column scaled)')
+
+```
+
+
+# frequency of subtypys (Pie shart)
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(forcats)
+library(scales)
+
+
+pi <- read.csv("MycpSubtypes.csv")
+
+bp<- ggplot(pi, aes(x="", y=value, fill=subtypes))+
+geom_bar(width = 1, stat = "identity")
+bp
+
+pi1 <- ggplot(pi, aes(x="", y=value, fill=subtypes)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)
+pi1
+
+pie <- bp + coord_polar("y", start=0) + geom_text(aes(label = label),
+            position = position_stack(vjust = 0.5), size=10) +
+  coord_polar(theta = "y") + theme(text = element_text(size = 4)) 
+pie
+pie + scale_fill_manual(values=c("#56B4E9", "#E69F00", "#CC6666", "#66CC99" )) + theme_void() +theme(text = element_text(size = 20)) 
+
+```
+
+# Cell-Stat
+```{r}
+stat <- read.csv("cell_stat_2.csv",row.names = 1)
+
+
+inputS <- as.matrix(t(stat))
+
+col_anno <- data.frame(histology = str_split(colnames(inputS), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputS))
+
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+
+dcols_S = dist(t(inputS), method = "minkowski")
+
+pheatmap(inputS, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, color=colorRampPalette(c( "blue", "black", "RED"))(50),clustering_distance_cols = dcols_S,  cluster_rows = FALSE, cluster_cols = TRUE )
+
+
+```
+
+# GSEA
+```{r}
+gsea_sr <- read.csv("sr.csv")
+```
+
+## GSEA (shart)
+```{r}
+library(dplyr)
+library(forcats)
+gsea_sr %>%
+  mutate(HALLMARK = fct_reorder(HALLMARK, NES)) %>%
+  ggplot( aes(x=HALLMARK , y = NES , fill=Histology)) +
+    geom_bar(stat="identity", position="identity")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15))+
+  coord_flip()
+```
+
+## GSEA (dotplot)
+```{r}
+dot_df = gsea_sr ## small dataset
+dot_df$type = "upregulated"
+dot_df$type[dot_df$NES < 0] = "downregulated"
+
+## from Tommy's code
+p <- ggplot(dot_df, aes(x = NES, y = HALLMARK)) + 
+               geom_point(aes(size = SIZE, color = NOM_p_val)) +
+               theme_bw(base_size = 14) +
+        scale_colour_gradient(limits=c(0, 0.10), low="red") +
+        ylab(NULL) +
+        ggtitle("GO pathway enrichment")
+
+p + facet_grid(.~type)
+
+```
+
+#mIHC heatmap 
+```{r}
+library("gplots")
+library("RColorBrewer") 
+library("pheatmap")
+
+core_h <- read.csv("core.csv",row.names = 1)
+
+
+inputc <- as.matrix(t(core_h))
+
+col_anno <- data.frame(histology = str_split(colnames(inputc), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputc))
+
+
+pheatmap(inputc,scale="row", annotation_col = col_anno, main = "pheatmap row annotation")
+```
+
+##Row scaling Core
+```{r}
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+pheatmap(inputc, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, main = 'Core_row scaled')
+```
+
+## Row scaling_Border
+
+```{r}
+border <- read.csv("border.csv",row.names = 1)
+
+
+inputb <- as.matrix(t(border))
+
+col_anno <- data.frame(histology = str_split(colnames(inputb), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputb))
+
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+dcols = dist(t(inputb), method = "minkowski")
+
+pheatmap(inputb, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, clustering_distance_cols = dcols, main = 'Border_row scaled' , legend = TRUE)
+```
+
+## Row scaling preiphry
+```{r}
+perph <- read.csv("perph.csv",row.names = 1)
+
+
+inputp <- as.matrix(t(perph))
+
+col_anno <- data.frame(histology = str_split(colnames(inputp), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputp))
+
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+pheatmap(inputp, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, main = 'Periphery_row scaled' )
+```
+
+## cytokines heatmap
+```{r}
+cyt <- read.csv("cytokines.csv",row.names = 1)
+
+
+inputcy <- as.matrix(t(cyt))
+
+col_anno <- data.frame(histology = str_split(colnames(inputcy), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputcy))
+
+histology        <- c("#FC717F", "#00A5FF")
+names(histology) <- c("SP", "SR")
+anno_colors <- list(histology = histology)
+
+dcols_cy = dist(t(inputcy), method = "minkowski")
+
+pheatmap(inputcy, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, clustering_distance_cols = dcols_cy, color=colorRampPalette(c("navy", "white", "yellow"))(50) )
+```
+
+# Metastisis Rate
+```{r}
+library(ggplot2)
+meta <- read.csv("meta.csv")
+my_ggp <- ggplot (data = meta,
+       aes (x = Tumor,
+            y = Metastisis_rate, fill = Tumor)) +
+           geom_bar(stat = "Identity") +
+  ggtitle("Metastisis Rate")
+my_ggp 
+
+my_ggp + theme(text = element_text(size = 18
+                                  )) + geom_violin(colour = "yellow", alpha = 0.1)
+```
+
+```{r}
