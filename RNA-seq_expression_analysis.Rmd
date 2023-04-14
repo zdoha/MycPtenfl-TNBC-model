@@ -1,339 +1,524 @@
 ---
-title: "Myc;Ptenfl TNBC mouse model RNA-seq analysis"
-author: "Zinab O. Doha"
+title: "Myc;Ptenfl TNBC mouse model bulk RNA-seq analysis & PCA & mIHC"
+author: "Zinab O. Doha" and "Nick Calistri"
 date: "01/28/2021"
-output: html_document
+output:
+  rmdformats::downcute:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    highlight: tango
 ---
 
-# Import Libraries
+# Set up
+
+## Load Libraries
 
 ```{r}
 library(tidyverse)
+library(dplyr)
+library(DESeq2)
+```
+
+## Set up color coding
+
+```{r}
+# Set up metadata colors
+col_dict <- tibble(names = c('SP', 'SR'),
+                   colors = c('#F8766D', '#619CFF'))
+
+# Set up range to use for expression heatmaps + color sequence
+exp_breaks <- seq(from = -3, to = 3, by = 0.05)
+exp_colors <- colorRampPalette(c('purple', 'black', 'yellow'))(length(exp_breaks))
+
 ```
 
 
 
-# Import and format data
+## Import and format data
 
 ```{r}
-data1 <- read.csv("expression_file.txt", sep = '\t' )
+# Load sample metadata
+sample_hist_dict <- read_csv('bulkrnaseq_sample_hist_dict.csv') %>%
+  mutate(sample = str_remove(sample, pattern = '_TPM'))
 
-mouse_groups <- c(0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1) ## class labels
-mouse_groups <- as.factor(mouse_groups)
+# Load TPM gene expression matrix
+tpm <- read.csv("data/expression_file.csv")
+counts <- read.delim('data/NeuNTandPTEN_CountsByGeneSymbol_Matrix.txt')
 
-rownames(data1) <- data1$genes ## row names should be gene names
-head(data1) ## preview data
-data1 <- data1 %>% select(-genes) ## remove gene names column -- now set as row labels
-```
+# format TPM gene expresison matrix as dataframe with unique row names
+rownames(counts) <- counts$GeneSymbol ## row names should be gene names
 
+counts <- counts %>%
+  dplyr::select(-GeneSymbol)
 
-```{r}
-mat1 <- data.matrix(data1) ## switch data type
-t(head(mat1))
-```
+counts_mat <- data.matrix(counts)
 
-# Analysis  
-## Plot samples by first two principal components
+# Filter to remove rows (genes) with no expression
+counts_mat <- counts_mat[rowSums(counts_mat)!=0, ]
 
-```{r}
-pca1 <- prcomp(mat1) ## run PCA
-pca2 <- as.data.frame(pca1$rotation) ## take PCS
-pca3 <- pca2 %>% select(PC1, PC2) ## select first 2
-pca3 <- cbind(pca3, mouse_groups) ## apply class labels
-pca3 ## look at PCs
-pca_plot <- ggplot(data = pca3, aes(x = PC1, y = PC2, colour = mouse_groups)) + geom_point(size = 1, alpha = .6, width = 0.2) ## create plot
-pca_plot ## plot by first 2 principal components
-```
-
-## Normalize expression values and create heatmap from most variable loci
-
-```{r}
-full <- t(mat1) ## transpose matrix
-
-max_vals <- c()
-
-for (feat in seq(dim(full)[2])){ ## create vector of maximum expression values for every locus
-  max_vals <- c(max_vals, max(full[, feat]))
-}
-```
-
-## Normalize expression values
-
-```{r}
-samples <- c()
-
-for (obs in seq(dim(full)[1])){ ## for every column, divide by maximum value of that feature to normalize between 0 and 1
-  newrow <- full[obs,] / max_vals 
-  samples <- rbind(samples, newrow)
-}
-
-samples[is.na(samples)] <- 0 ## replace NaNs with 0 -- fix divide by zero error
-
-```
-
-## Look for most variable sites
-
-```{r}
-variances <- c()
-
-for (feat in seq(dim(samples)[2])){ ## calculate variance for every feature
-  variances <- c(variances, var(full[, feat]))
-}
+# Number of filtered genes
+print(paste('Number of filtered (0 counts) genes:', nrow(counts) - nrow(counts_mat)))
 
 ```
 
 
+# MycPten;fl Analysis  
+
+## Convert to DESeq2 format
+
 ```{r}
-## take top "n" most variable loci
+# Format metadata
+coldata <- data.frame(row.names = sample_hist_dict$sample,
+                      phenotype = sample_hist_dict$histology_phenotype)
 
-n = 1200 ## choose how many loci to include in heatmap
+# Filter counts matrix to only include samples of interest
+counts_filt <- counts_mat[,row.names(coldata)]
 
-var_ordered <- variances[order(variances, decreasing = TRUE)] ## rank features by variance
-cutoff <- min(var_ordered[1:n+1]) ## take "n" most variable sites
+# Validate coldata aligns with counts column names
+all(colnames(counts_filt) == rownames(coldata))
 
+# Create deseq object
+dds <- DESeqDataSetFromMatrix(countData = counts_filt,
+                              colData = coldata,
+                              design = ~phenotype)
 
-bool1 <- variances > cutoff ## boolean index for most variably expressed loci
+# Filter to only genes that have >10 counts in 5 samples
+keep <- rowSums(counts(dds) >= 10) >= 5
+dds <- dds[keep,]
+
+# Assign Stromal Rich as reference
+dds$phenotype <- relevel(dds$phenotype, ref = 'SR')
 ```
 
-## Select most variable sites 
+
+
+## Identify variable genes & Compute PCA
 
 ```{r}
-most_var <- samples[,bool1] ## index with most variable sites
-rownames(most_var) <- rownames(full) ## sample names as row names
+
+vsd <- vst(dds, blind = TRUE)
+plotPCA(vsd, intgroup = 'phenotype', ntop = 1000)
+
+# Manual PCA
+
+## Select ntop most variable genes
+ntop <- 1000
+rv <- genefilter::rowVars(assay(vsd))
+topvar_feats <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+## Perform PCA
+pca <- prcomp(t(assay(vsd)[topvar_feats,]), center = TRUE, scale = FALSE)
+
+## Conver to tibble and visualize
+pca_tibble <- as_tibble(pca$x) %>%
+  mutate(sample = row.names(pca$x)) %>%
+  mutate(phenotype = plyr::mapvalues(x = sample,
+                                     from = sample_hist_dict$sample,
+                                     to = sample_hist_dict$histology_phenotype))
+
+ggplot(pca_tibble, aes(x = PC1*summary(pca)$importance[2,1], y = PC2*summary(pca)$importance[2,2], color = phenotype))+
+  geom_point()+
+  theme_bw()+
+  ggrepel::geom_text_repel(aes(label = str_split(sample, pattern = '_', simplify = TRUE)[,5]))+
+  ggtitle('Principal Component Analysis \n (Axes scaled by proportion of variance)')+
+  xlab(paste0('PC1 \n ', round(summary(pca)$importance[2,1]*100,0), '% of variance'))+
+  ylab(paste0('PC2 \n ', round(summary(pca)$importance[2,2]*100,0), '% of variance'))+
+  coord_fixed()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = col_dict$colors)
+
 ```
 
-## Create heatmap / dendrograms 
+Caption: Principal component analysis showing the first two principal components computed on the top 1000 variable genes.
+
+
+## Perform DESeq2 deg 
 
 ```{r}
-heatmap(most_var) ## create heatmap
+dds <- DESeq(dds)
+```
+
+## Visualize DEGs
+
+```{r}
+res <- results(dds)
+
+resLFC <- lfcShrink(dds, coef = 'phenotype_SP_vs_SR', type = 'apeglm')
+
+# Convert to tibble and plot
+res_tibble <- results(dds) %>%
+  as_tibble() %>%
+  mutate(gene = rownames(results(dds)))
+
+ggplot(res_tibble, aes(x = baseMean, y = log2FoldChange, color = padj < 0.05))+
+  geom_point()+
+  scale_x_log10()
+
+plotMA(results(dds), ylim = c(-5, 5))
+
+plotMA(resLFC)
 ```
 
 
-SR: 1, 2, 3, 4, 5, 6, 10, 11
+## Variable feature heatmap
 
-SP: 7, 8, 9, 12, 13
+```{r, fig.asp = 1}
+# Format column/row annotation
+col_anno <- data.frame(row.names = sample_hist_dict$sample,
+                       subtype = sample_hist_dict$histology_phenotype)
 
-Developing dendrogram from 1200 most variably expressed genes, recapitulates 2 subgroups
+row_anno <- data.frame(row.names = row.names(assay(vsd)[topvar_feats,]))
 
-# Human subtyping 
+row_anno$pc1_weight <- ifelse(pca$rotation[,1] > 0, 'positive', 'negative')
 
-Parallels between four subtypes in human TNBC and mouse data
+# Format color annotations
+pc_weight_cols <- c('pink', 'cyan')
+names(pc_weight_cols) <- c('positive', 'negative')
+
+subtype_cols <- col_dict$colors
+names(subtype_cols) <- c('SP', 'SR')
 
 
-```{r}
-#subtybing
-#install.packages("reshape2")
-#install.packages("ggplot2")
-#install.packages("tidyr")
-library(reshape2)
-library(ggplot2)
-library(tidyr)
+anno_colors <- list(pc1_weight = pc_weight_cols,
+                    subtype = subtype_cols)
+
+# Generate heatmap
+pheatmap::pheatmap(assay(vsd)[topvar_feats,],
+                   scale = 'row',
+                   annotation_col = col_anno,
+                   annotation_row = row_anno,
+                   show_rownames = FALSE,
+                   annotation_colors = anno_colors,
+                   main = 'Gene Expression \n (Top 1000 variable genes)',
+                   labels_col = str_split(colnames(assay(vsd)),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   color = exp_colors,
+                   breaks = exp_breaks)
+
 ```
 
- 
-## Read in files
-```{r}
-expression_file = "expression_file.txt"
-df = read.csv(expression_file, sep="\t", header=TRUE, row.names=1, check.names=FALSE)
- 
-centroid_file = "Human_TNBC_77centroids.csv"
-centroids <- read.csv(centroid_file, header=TRUE, row.names=1, sep="\t")
- 
-#names <- df[,1]
-#rownames(df) = make.names(names, unique=TRUE)
-#rownames(df) <- df[,1]
+Caption: Heatmap showing the top 1000 variable genes used in principal component analysis. Counts were normalized with a Variance Stabilizing Transformation, and then z scored across samples. Row annotation shows whether each individual gene had a positive or negative weight in PC1 (~60% of total PCA variance).
+
+## Sample-sample correlation
+
+```{r, fig.asp = 1}
+sampleCors <- cor(assay(vsd)[topvar_feats,])
+
+pheatmap::pheatmap(sampleCors,
+                   annotation_row = col_anno,
+                   annotation_col = col_anno,
+                   display_numbers = round(sampleCors,2),
+                   main = 'Sample-sample Pearson correlation \n Top 1000 variable features \n VST transformed counts',
+                   labels_col = str_split(colnames(sampleCors),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   labels_row = str_split(rownames(sampleCors),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   annotation_colors = anno_colors)
 ```
 
- 
-## Scale values and subset genes in signature
+
+
+# TNBC subtype - MycPten;fl correlation
+
+## Load data
+
 ```{r}
-df <- t(scale(t(df), center=TRUE, scale=TRUE))
+centroids <- read.delim("data/signature2.txt", row.names = 2)[,-1]
 ```
 
- 
-## Make gene names uppercase
+## Map Human genes to murine
+
 ```{r}
-names <- rownames(df)
-rownames(df) = toupper(names)
+library(biomaRt)
+
+human <- useEnsembl('ensembl', dataset = 'hsapiens_gene_ensembl', host = 'https://dec2021.archive.ensembl.org')
+mouse <- useEnsembl('ensembl', dataset = 'mmusculus_gene_ensembl', host = 'https://dec2021.archive.ensembl.org')
+
+hs_mm <- getLDS(attributes = c("external_gene_name"),
+       mart = human,
+       attributesL = c("external_gene_name"),
+       martL = mouse)
+
+# Create centroids_mm replacing human gene names with murine
+centroids_mm <- centroids
+
+rownames(centroids_mm) <- plyr::mapvalues(x = rownames(centroids),
+                from = hs_mm$Gene.name,
+                to = hs_mm$Gene.name.1,
+                warn_missing = FALSE)
 ```
 
- 
-## Replace NaNs with 0s
+
+## Compute correlation
+
+640x300 px
 ```{r}
-df[is.na(df)] <- 0
- 
-df_data_filter <- df_data[df_data$Var1 %in% centroids$Gene, ]
- 
-centroids_filtered <- centroids[centroids$Gene %in% df_data_filter$Var1, ]
- 
-df2 <- df_data_filter %>%
-  spread(Var2, Freq)
-```
+# Find shared homologs mapped in mouse bulk RNA-seq
+shared_homologs <- rownames(centroids_mm)[rownames(centroids_mm) %in% rownames(assay(vsd))]
 
- 
-## x must be numeric, make first column numeric
-```{r}
-rownames(df2) <- df2$Var1
- 
-df2 <- subset(df2, select = -Var1)
-```
+# Scale values and subset genes to shared homologs where z score is not zero
+vsd_z <- t(scale(t(assay(vsd)), center=TRUE, scale=TRUE))
 
- 
-## Divide df into sub data frames to make compatible dimensions
- 
-```{r}
-df3 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b1_TPM, PT_Myc_PTEN_MGT_b2_TPM, PT_Myc_PTEN_MGT_b3_TPM, PT_Myc_PTEN_MGT_b4_TPM))
-df4 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b5_TPM, PT_Myc_PTEN_MGT_b6_TPM, PT_Myc_PTEN_MGT_b7_TPM, PT_Myc_PTEN_MGT_b8_TPM))
-df5 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b9_TPM, PT_Myc_PTEN_MGT_b10_TPM, PT_Myc_PTEN_MGT_b11_TPM, PT_Myc_PTEN_MGT_b12_TPM))
-df6 <- subset(df2, select = c(PT_Myc_PTEN_MGT_b11_TPM, PT_Myc_PTEN_MGT_b12_TPM, PT_Myc_PTEN_MGT_b13_TPM, PT_Myc_PTEN_MGT_b14_TPM))
-```
+valid_genes <- rownames(vsd_z[shared_homologs,])[! is.na(rowSums(vsd_z[shared_homologs,]))]
 
- 
-## y must be numeric, make first column numeric
-```{r}
-rownames(centroids_filtered) <- centroids_filtered$Gene
-centroids_filtered <- subset(centroids_filtered, select = -Gene)
-```
+vsd_z <- vsd_z[valid_genes,]
+centroids_mm <- t(scale(t(centroids_mm[valid_genes,])))
 
- 
-## Run correletion
-```{r}
-cor <- cor(df3, centroids_filtered, method="pearson")
-#cor <- cor(df4, centroids_filtered, method="pearson")
-#cor <- cor(df5, centroids_filtered, method="pearson")
-#cor <- cor(df6, centroids_filtered, method="pearson")
+# Run correletion
+mp_cor <- cor(vsd_z, centroids_mm, method="spearman")
+mp_cor_melt <- reshape2::melt(as.matrix(mp_cor))
+colnames(mp_cor_melt) <- c("Sample", "Subtype", "Spearman")
 
- 
-cor <- melt(as.matrix(cor))
-colnames(cor) <- c("Sample", "Subtype", "Pearson")
-```
-
- 
-## Bar plot of results
-
-```{r}
-ggplot(cor,aes(x=Sample, y=Pearson, fill=Subtype)) +
+# Bar plot of results
+ggplot(mp_cor_melt,aes(x=Sample, y=Spearman, fill=Subtype)) +
   geom_bar(stat = "identity", position = "dodge") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90)) +
   guides(fill=guide_legend(ncol=1))
- 
-ggsave(file = "subtype.cor4.png", device = "png", width = 5, height = 5, dpi=300)
-```
-## Save file
-```{r}
-saveRDS(cor,
-        file = 'HUMAN_CORELATION.rds')
-```
 
-# Human corelation heatmap
-```{r}
-TNBC <- read.rds("HUMAN_CORELATION.rds", row.names = 1)
+# Heatmap of results
 
-
-inputTN <- as.matrix(t(TNBC))
-
-
-
-col_anno <- data.frame(histology = str_split(colnames(inputTN), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputTN))
-
-histology        <- c("#FC717F", "#00A5FF")
-names(histology) <- c("SP", "SR")
-anno_colors <- list(histology = histology)
-dcols = dist(t(inputTN), method = "minkowski")
-
-pheatmap(prop.table(inputTN, margin = 2),scale="column", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, main = 'Human TNBC Spearman correlation (column scaled)', legend = FALSE)
-
-pheatmap(inputTN, scale="column", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 16, main = 'Human TNBC Spearman correlation (column scaled)')
+pheatmap::pheatmap(t(mp_cor),
+                   annotation_col = col_anno,
+                   annotation_colors = anno_colors,
+                   main = 'Spearman correlation with TNBC subtype centroids',
+                   labels_col = str_split(rownames(mp_cor),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   cellwidth = 20,
+                   cellheight = 20)
 
 ```
 
+# Chemokine Heatmap
 
-# frequency of subtypys (Pie shart)
-```{r}
-library(ggplot2)
-library(dplyr)
-library(ggplot2)
-library(ggrepel)
-library(forcats)
-library(scales)
+640x360 px
 
-
-pi <- read.csv("MycpSubtypes.csv")
-
-bp<- ggplot(pi, aes(x="", y=value, fill=subtypes))+
-geom_bar(width = 1, stat = "identity")
-bp
-
-pi1 <- ggplot(pi, aes(x="", y=value, fill=subtypes)) +
-  geom_bar(stat="identity", width=1) +
-  coord_polar("y", start=0)
-pi1
-
-pie <- bp + coord_polar("y", start=0) + geom_text(aes(label = label),
-            position = position_stack(vjust = 0.5), size=10) +
-  coord_polar(theta = "y") + theme(text = element_text(size = 4)) 
-pie
-pie + scale_fill_manual(values=c("#56B4E9", "#E69F00", "#CC6666", "#66CC99" )) + theme_void() +theme(text = element_text(size = 20)) 
-
-```
-
-# Cell-Stat
-```{r}
-stat <- read.csv("cell_stat_2.csv",row.names = 1)
+```{r, fig.asp = 1}
+# Format column/row annotation
+col_anno <- data.frame(row.names = sample_hist_dict$sample,
+                       subtype = sample_hist_dict$histology_phenotype)
 
 
-inputS <- as.matrix(t(stat))
 
-col_anno <- data.frame(histology = str_split(colnames(inputS), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputS))
+# Format color annotations
 
-histology        <- c("#FC717F", "#00A5FF")
-names(histology) <- c("SP", "SR")
-anno_colors <- list(histology = histology)
+subtype_cols <- col_dict$colors
+names(subtype_cols) <- c('SP', 'SR')
 
-dcols_S = dist(t(inputS), method = "minkowski")
+anno_colors <- list(subtype = subtype_cols)
 
-pheatmap(inputS, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, color=colorRampPalette(c( "blue", "black", "RED"))(50),clustering_distance_cols = dcols_S,  cluster_rows = FALSE, cluster_cols = TRUE )
+# Select cytokines of interest
+coi <- c('Ccl5', 'Ccl7', 'Ccl8', 'Ccl17', 'Ccl20', 'Ccl22', 'Ccl11')
+
+# Plot heatmap
+pheatmap::pheatmap(assay(vsd)[coi[coi %in% row.names(vsd)],],
+                   scale = 'row',
+                   annotation_col = col_anno,
+                   annotation_colors = anno_colors,
+                   labels_col = str_split(colnames(assay(vsd)),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   color = exp_colors,
+                   breaks = exp_breaks,
+                   main = 'Prognostic chemokine expression',
+                   cellwidth = 20,
+                   cellheight = 20)
+
+# display DEG results for these genes
+
+resLFC[coi,] %>%
+  as_tibble(., rownames = 'gene') %>%
+  dplyr::filter(padj < 0.05) %>%
+  arrange(log2FoldChange) %>%
+  knitr::kable()
 
 
 ```
+
+# Cell state heatmap
+
+720x1080 px
+
+```{r, fig.asp = 2}
+cellstate_markers <- read_csv('epithelial_markers_risom_2020_tjoci.csv') %>%
+  mutate(mm_gene = plyr::mapvalues(x = gene,
+                                   from = hs_mm$Gene.name,
+                                   to = hs_mm$Gene.name.1,
+                                   warn_missing = FALSE))
+
+cs_filt <- cellstate_markers %>%
+  filter(mm_gene %in% row.names(vsd))
+
+row_anno <- data.frame(row.names = cs_filt$mm_gene,
+                       associated_state = cs_filt$association)
+
+# Plot heatmap
+pheatmap::pheatmap(assay(vsd)[cs_filt$mm_gene,],
+                   scale = 'row',
+                   annotation_col = col_anno,
+                   annotation_row = row_anno,
+                   annotation_colors = anno_colors,
+                   cluster_rows = FALSE,
+                   labels_col = str_split(colnames(assay(vsd)),
+                                          pattern = '_',
+                                          simplify = TRUE)[,5],
+                   color = exp_colors,
+                   breaks = exp_breaks,
+                   main = 'Epithelial state markers',
+                   gaps_row = c(14,24),
+                   cellheight = 15,
+                   cellwidth = 15)
+
+# display significant DEG results for these genes
+
+resLFC[cs_filt$mm_gene,] %>%
+  as_tibble(., rownames = 'gene') %>%
+  dplyr::filter(padj < 0.05) %>%
+  arrange(log2FoldChange) %>%
+  knitr::kable()
+```
+
 
 # GSEA
+
+## Load libraries
 ```{r}
-gsea_sr <- read.csv("sr.csv")
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(msigdbr)
 ```
 
-## GSEA (shart)
+## Select mouse msigdb hallmark gene sets
+
 ```{r}
-library(dplyr)
-library(forcats)
-gsea_sr %>%
-  mutate(HALLMARK = fct_reorder(HALLMARK, NES)) %>%
-  ggplot( aes(x=HALLMARK , y = NES , fill=Histology)) +
-    geom_bar(stat="identity", position="identity")+
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15))+
-  coord_flip()
+h_mm <- msigdbr(species = 'mouse', category = 'H')
+
+h_mm_t2g <- h_mm %>%
+  dplyr::select(gs_name, gene_symbol)
 ```
 
-## GSEA (dotplot)
+## Prepare ranked gene_list from resLFC
 ```{r}
-dot_df = gsea_sr ## small dataset
-dot_df$type = "upregulated"
-dot_df$type[dot_df$NES < 0] = "downregulated"
+deg <- as_tibble(resLFC) %>%
+  filter(! is.na(log2FoldChange)) %>%
+  mutate(gene = row.names(resLFC)) %>%
+  arrange(desc(log2FoldChange))
 
-## from Tommy's code
-p <- ggplot(dot_df, aes(x = NES, y = HALLMARK)) + 
-               geom_point(aes(size = SIZE, color = NOM_p_val)) +
-               theme_bw(base_size = 14) +
-        scale_colour_gradient(limits=c(0, 0.10), low="red") +
-        ylab(NULL) +
-        ggtitle("GO pathway enrichment")
+gene_list <- deg$log2FoldChange
+names(gene_list) <- deg$gene
+```
 
-p + facet_grid(.~type)
+
+## Perform GSEA on msigdb hallmark
+
+```{r}
+em <- GSEA(gene_list,
+           TERM2GENE = h_mm_t2g,
+           pvalueCutoff = 1,
+           eps = 0,
+           nPermSimple = 10000)
+
+em_tibble <- em@result
+
+em_tibble %>%
+  dplyr::select(NES, p.adjust, pvalue) %>%
+  arrange(NES) %>%
+  DT::datatable()
+```
+
+## Visualize top 3 Stromal Poor pathways
+
+720x1080 px (each)
+
+```{r, fig.asp = 1}
+sp_top3 <- em@result %>%
+  filter(p.adjust < 0.05) %>%
+  filter(NES > 0) %>%
+  arrange(desc(NES)) %>%
+  slice_head(n = 3)
+
+for(i in sp_top3$ID){
+  
+  curr_hm <- as_tibble(em) %>%
+    filter(ID == i)
+  
+  gseaplot(em, by = 'all',
+           title = paste0(curr_hm$Description,
+                          '\n NES: ',
+                          round(curr_hm$NES,2),
+                          '\n P.adj: ',
+                          signif(curr_hm$p.adjust,2)),
+           geneSetID = i) %>%
+    print()
+}
+
+sr_top3 <- em@result %>%
+  filter(p.adjust < 0.05) %>%
+  filter(NES < 0) %>%
+  arrange(NES) %>%
+  slice_head(n = 3)
+
+for(i in sr_top3$ID){
+  
+  curr_hm <- as_tibble(em) %>%
+    filter(ID == i)
+  
+  gseaplot(em, by = 'all',
+           title = paste0(curr_hm$Description,
+                          '\n NES: ',
+                          round(curr_hm$NES,2),
+                          '\n P.adj: ',
+                          signif(curr_hm$p.adjust,2)),
+           geneSetID = i) %>%
+    print()
+}
+```
+
+## GSEA barplot
+
+1080x720 px
+```{r}
+sig_hm <- em@result %>%
+  filter(p.adjust < 0.05) %>%
+  arrange(NES)
+
+sig_hm <- sig_hm %>%
+  mutate(ID = factor(ID, levels = sig_hm$ID)) %>%
+  mutate(association = ifelse(NES > 0, 'SP', 'SR'))
+
+ggplot(sig_hm, aes(x = NES, y = ID, fill = association))+
+  geom_col()+
+  theme_bw()+
+  scale_color_manual(values = col_dict$colors)+
+  ggtitle('MSigDB enriched Hallmarks')+
+  theme(plot.title = element_text(hjust = 0.5, size = 20))
+```
+
+# Save output
+
+```{r}
+# DEGs
+resLFC_tibble <- as_tibble(resLFC,
+                           rownames = 'gene')
+
+write_csv(x = resLFC_tibble,
+          file = 'bulk_mycptenfl_degs.csv')
+
+# GSEA results
+
+write_csv(x = em@result,
+          file = 'bulk_mycptenfl_msigdb_gsea.csv')
 
 ```
 
-#mIHC heatmap 
+# mIHC analysis
+
 ```{r}
 library("gplots")
 library("RColorBrewer") 
@@ -391,23 +576,6 @@ anno_colors <- list(histology = histology)
 pheatmap(inputp, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, main = 'Periphery_row scaled' )
 ```
 
-## cytokines heatmap
-```{r}
-cyt <- read.csv("cytokines.csv",row.names = 1)
-
-
-inputcy <- as.matrix(t(cyt))
-
-col_anno <- data.frame(histology = str_split(colnames(inputcy), pattern = '_', simplify = TRUE)[,1], row.names = colnames(inputcy))
-
-histology        <- c("#FC717F", "#00A5FF")
-names(histology) <- c("SP", "SR")
-anno_colors <- list(histology = histology)
-
-dcols_cy = dist(t(inputcy), method = "minkowski")
-
-pheatmap(inputcy, scale="row", annotation = col_anno, annotation_colors = anno_colors, fontsize_row = 12, clustering_distance_cols = dcols_cy, color=colorRampPalette(c("navy", "white", "yellow"))(50) )
-```
 
 # Metastisis Rate
 ```{r}
@@ -424,4 +592,9 @@ my_ggp + theme(text = element_text(size = 18
                                   )) + geom_violin(colour = "yellow", alpha = 0.1)
 ```
 
+# sessionInfo
+
 ```{r}
+sessionInfo()
+```
+
